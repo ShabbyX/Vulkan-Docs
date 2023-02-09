@@ -212,6 +212,8 @@ include::appendices/invariance.adoc[]
 
 include::appendices/glossary.adoc[]
 
+include::appendices/vulanguage.adoc[]
+
 include::appendices/credits.adoc[]
 
 endif::[]
