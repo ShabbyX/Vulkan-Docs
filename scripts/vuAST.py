@@ -211,40 +211,22 @@ ATTR_BUILTINS = {
     'raytracing_create_info': VuAttrFuncType(HANDLE_TYPE, VuFuncType(STRUCT_TYPE, [])),
 }
 
-class VuFormat(Enum):
-    # Format for adoc source.  Used by reflow.py
-    SOURCE = 0,
-    # Format for output, with syntax highlighting etc.
-    OUTPUT = 1,
-
-
 class VuFormatter(ast.NodeVisitor):
     """A helper class to format a VU.
 
     This is used by reflow.py to format the VUs in the input files.  It is also
     used during build to format the VU appropriately for output, e.g. with
     links, syntax highlighting etc."""
-    def __init__(self, entity_db, fmt, filename, fileline):
-        # entity_db is not used when formatting source
-        assert(fmt == VuFormat.SOURCE or entity_db is not None)
-
-        self.entity_db = entity_db
-        """EntityDatabase used to look up symbols used by the VU."""
-
-        self.filename = filename
-        self.fileline = fileline
-        """Location of VU."""
-
+    def __init__(self, styler):
         self.indent = 0
         """The current amount of indent."""
-
-        assert(fmt in [VuFormat.SOURCE, VuFormat.OUTPUT])
-        self.fmt = fmt
-        """How to format the code."""
 
         self.formatted = []
         """The result formatted VU.  A "global" to avoid passing around and
         simplify the code."""
+
+        self.styler = styler
+        """A helper used to style the formatted output."""
 
     def format(self, ast, isWholeTree = True):
         """Format a given AST"""
@@ -258,47 +240,10 @@ class VuFormatter(ast.NodeVisitor):
         formatted = ''.join(self.formatted)
 
         if isWholeTree:
-            self.verifyIdentical(ast, formatted)
+            self.styler.verifyIdentical(ast, formatted)
 
         # Join the pieces to get the final output
         return formatted
-
-    def verifyIdentical(self, tree, formatted):
-        """Verify that the formatted text is syntactically identical to the input."""
-
-        toVerify = formatted
-        if self.fmt == VuFormat.OUTPUT:
-            # Strip all annotations first
-            toVerify = toVerify.replace('[vu]', '')
-            toVerify = toVerify.replace('&nbsp;', ' ')
-            toVerify = re.sub(stylePattern, '', toVerify)
-            toVerify = re.sub(linkPattern, '', toVerify)
-            toVerify = re.sub(newLinePattern, '', toVerify)
-            toVerify = toVerify.replace('#', '')
-            toVerify = toVerify.replace('>>', '')
-            toVerify = toVerify.replace('ename:', '')
-            toVerify = toVerify.replace('sname:', '')
-            toVerify = toVerify.replace('fname:', '')
-            toVerify = toVerify.replace('dname:', '')
-            toVerify = toVerify.replace('tname:', '')
-            toVerify = toVerify.replace('elink:', '')
-            toVerify = toVerify.replace('slink:', '')
-            toVerify = toVerify.replace('flink:', '')
-            toVerify = toVerify.replace('dlink:', '')
-            toVerify = toVerify.replace('tlink:', '')
-
-        try:
-            formattedTree = ast.parse(toVerify, self.filename, 'exec')
-        except SyntaxError as exc:
-            logPrefix = self.filename + ':' + str(self.fileline) + ':'
-            logErr('Internal error: Parse error after reformatting VU:' , exc)
-            return
-
-        if ast.dump(formattedTree) != ast.dump(tree):
-            logPrefix = self.filename + ':' + str(self.fileline) + ':'
-            logWarn(ast.dump(tree, indent=' '))
-            logWarn(ast.dump(formattedTree, indent=' '))
-            logErr(logPrefix, 'Internal error: Reformatted VU is different from original VU')
 
     def add(self, text):
         self.formatted.append(text)
@@ -332,37 +277,22 @@ class VuFormatter(ast.NodeVisitor):
         self.indent -= 4
 
     def beginLine(self):
-        space = ' ' if self.fmt == VuFormat.SOURCE else '&nbsp;'
-        self.add(space * self.indent)
+        self.add(self.styler.space * self.indent)
 
     def endLine(self):
-        # For SOURCE formatting, just a new line is sufficient.  For OUTPUT
-        # formatting, add ` +` to make sure there is a line break in the
-        # output.
-        if self.fmt == VuFormat.OUTPUT:
-            self.add(' +')
-        self.add('\n')
+        self.add(self.styler.endOfLine)
 
     def beginStyle(self, style, delimiter = '##'):
-        if (self.fmt == VuFormat.OUTPUT):
-            self.add('[' + style + ']' + delimiter)
+        self.formatted += self.styler.beginStyle(style, delimiter)
 
     def endStyle(self, delimiter = '##'):
-        if (self.fmt == VuFormat.OUTPUT):
-            self.add(delimiter)
+        self.formatted += self.styler.endStyle(delimiter)
 
     def beginLink(self, link):
-        if (self.fmt == VuFormat.OUTPUT):
-            self.add('<<' + link + ',')
+        self.formatted += self.styler.beginLink(link)
 
     def endLink(self):
-        if (self.fmt == VuFormat.OUTPUT):
-            self.add('>>')
-
-    def addReference(self, tag, ref):
-        assert(self.fmt == VuFormat.OUTPUT)
-        self.add(tag)
-        self.add(ref)
+        self.formatted += self.styler.endLink()
 
     def addOperator(self, op, preSpace = ' ', postSpace = ' '):
         # Output: ` op `
@@ -636,7 +566,6 @@ class VuFormatter(ast.NodeVisitor):
 
         self.endParenthesis()
 
-
     def visit_UnaryOp(self, node):
         # Output: opoperand
         # For `not`, output `not operand`
@@ -716,25 +645,11 @@ class VuFormatter(ast.NodeVisitor):
     def visit_Name(self, node):
         # If it is a builtin, make a link to the reference.
         if node.id in FUNC_BUILTINS.keys():
-            # Make sure `macro()` never makes it to the output.
-            if self.fmt == VuFormat.OUTPUT:
-                assert(node.id != 'macro')
-
+            self.styler.onBuiltInVisit(node.id)
             self.addBuiltIn(node.id)
             return
 
-        # If it is an API entity, add the appropriate prefix such as slink: etc.
-        # Otherwise outputting it plainly is sufficient.  No need for pname: on
-        # members, function arguments etc, as the VU is already rendered in
-        # monospace.
-        if (self.fmt == VuFormat.OUTPUT):
-            entity = self.entity_db.findEntity(node.id)
-            if entity is None or entity.macro is None:
-                self.add(node.id)
-            else:
-                self.addReference(entity.macro + ':', node.id)
-        else:
-            self.add(node.id)
+        self.formatted += self.styler.getNameSymbol(node)
 
     # Although unsupported, the following are also output correctly for the
     # sake of VuVerifier.  When the expression is invalid, it will output why
@@ -755,6 +670,123 @@ class VuFormatter(ast.NodeVisitor):
             self.visit(elt)
         self.add(']')
 
+
+class VuSourceStyler:
+    """A helper class used with VuFormatter to format the VU for source adoc
+    files"""
+    def __init__(self, filename, fileline):
+        self.filename = filename
+        self.fileline = fileline
+        """Location of VU."""
+
+        self.space = ' '
+        """String used for indentation."""
+
+        self.endOfLine = '\n'
+        """String used to indicate end-of-line."""
+
+    def verifyIdentical(self, originalAST, formatted):
+        try:
+            formattedTree = ast.parse(formatted, self.filename, 'exec')
+        except SyntaxError as exc:
+            logPrefix = self.filename + ':' + str(self.fileline) + ':'
+            logErr('Internal error: Parse error after reformatting VU:' , exc)
+            return
+
+        if ast.dump(formattedTree) != ast.dump(originalAST):
+            logPrefix = self.filename + ':' + str(self.fileline) + ':'
+            logWarn(ast.dump(originalAST, indent=' '))
+            logWarn(ast.dump(formattedTree, indent=' '))
+            logErr(logPrefix, 'Internal error: Reformatted VU is different from original VU')
+
+    def beginStyle(self, style, delimiter):
+        return []
+
+    def endStyle(self, delimiter):
+        return []
+
+    def beginLink(self, link):
+        return []
+
+    def endLink(self):
+        return []
+
+    def getNameSymbol(self, node):
+        return [node.id]
+
+    def onBuiltInVisit(self, name):
+        pass
+
+
+class VuOutputStyler:
+    """A helper class used with VuFormatter to format the VU for built output"""
+    def __init__(self, entity_db, filename, fileline):
+        self.entity_db = entity_db
+        """EntityDatabase used to look up symbols used by the VU."""
+
+        self.filename = filename
+        self.fileline = fileline
+        """Location of VU."""
+
+        self.space = '&nbsp;'
+        """String used for indentation."""
+
+        # ` +` is used to ensure line breaks in the output.
+        self.endOfLine = ' +\n'
+        """String used to indicate end-of-line."""
+
+    def verifyIdentical(self, originalAST, formatted):
+        toVerify = formatted
+
+        # Strip all annotations first
+        toVerify = toVerify.replace('[vu]', '')
+        toVerify = toVerify.replace('&nbsp;', ' ')
+        toVerify = re.sub(stylePattern, '', toVerify)
+        toVerify = re.sub(linkPattern, '', toVerify)
+        toVerify = re.sub(newLinePattern, '', toVerify)
+        toVerify = toVerify.replace('#', '')
+        toVerify = toVerify.replace('>>', '')
+        toVerify = toVerify.replace('ename:', '')
+        toVerify = toVerify.replace('sname:', '')
+        toVerify = toVerify.replace('fname:', '')
+        toVerify = toVerify.replace('dname:', '')
+        toVerify = toVerify.replace('tname:', '')
+        toVerify = toVerify.replace('elink:', '')
+        toVerify = toVerify.replace('slink:', '')
+        toVerify = toVerify.replace('flink:', '')
+        toVerify = toVerify.replace('dlink:', '')
+        toVerify = toVerify.replace('tlink:', '')
+
+        # Now that it looks like the source output, use the source styler to verify it.
+        sourceStyler = VuSourceStyler(self.filename, self.fileline)
+        sourceStyler.verifyIdentical(originalAST, toVerify)
+
+    def beginStyle(self, style, delimiter):
+        return ['[', style, ']', delimiter]
+
+    def endStyle(self, delimiter):
+        return [delimiter]
+
+    def beginLink(self, link):
+        return ['<<', link, ',']
+
+    def endLink(self):
+        return ['>>']
+
+    def getNameSymbol(self, node):
+        # If it is an API entity, add the appropriate prefix such as slink: etc.
+        # Otherwise outputting it plainly is sufficient.  No need for pname: on
+        # members, function arguments etc, as the VU is already rendered in
+        # monospace.
+        entity = self.entity_db.findEntity(node.id)
+        if entity is None or entity.macro is None:
+            return [node.id]
+        else:
+            return [entity.macro, ':', node.id]
+
+    def onBuiltInVisit(self, name):
+        # Make sure `macro()` never makes it to the output.
+        assert(name != 'macro')
 
 class VuTypeExtractor:
     """Helper class to extract types out of symbols used in the VU.  Used for
@@ -971,7 +1003,7 @@ class VuVerifier(ast.NodeVisitor):
         account for simplicity."""
 
     def formatNode(self, node):
-        formatter = VuFormatter(self.entity_db, VuFormat.SOURCE, self.filename, self.fileline)
+        formatter = VuFormatter(VuSourceStyler(self.filename, self.fileline))
         return formatter.format(node, isWholeTree = False)
 
     def fail(self, nodes, *args):
@@ -1533,6 +1565,13 @@ class VuParametterTagExtractor(ast.NodeVisitor):
         self.tag = node.id
 
 
+class VuFormat(Enum):
+    # Format for adoc source.  Used by reflow.py
+    SOURCE = 0,
+    # Format for output, with syntax highlighting etc.
+    OUTPUT = 1,
+
+
 class VuAST:
     """The AST corresponding to a codified VU."""
     def __init__(self):
@@ -1614,9 +1653,13 @@ class VuAST:
         that has gone through macro expansion."""
         assert(fmt == VuFormat.SOURCE or entity_db is not None)
 
-        ast = self.ast if fmt == VuFormat.SOURCE else self.astExpanded
+        ast = self.ast
+        styler = VuSourceStyler(self.filename, self.fileline)
+        if fmt == VuFormat.OUTPUT:
+            ast = self.astExpanded
+            styler = VuOutputStyler(entity_db, self.filename, self.fileline)
 
-        formatter = VuFormatter(entity_db, fmt, self.filename, self.fileline)
+        formatter = VuFormatter(styler)
         return formatter.format(ast)
 
     def getParameterTag(self):

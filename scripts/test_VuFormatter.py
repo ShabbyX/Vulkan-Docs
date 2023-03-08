@@ -9,7 +9,7 @@ import os
 import pytest
 
 from check_spec_links import VulkanEntityDatabase
-from vuAST import VuFormatter, VuFormat
+from vuAST import VuFormatter, VuFormat, VuSourceStyler, VuOutputStyler
 
 
 @pytest.fixture
@@ -22,7 +22,7 @@ def verify(formatter, input, output):
 
 def test_source_unary_op(db):
     """Source formatting: Test unary ops."""
-    formatter = VuFormatter(db, VuFormat.SOURCE, 'file.adoc', 123)
+    formatter = VuFormatter(VuSourceStyler('file.adoc', 123))
 
     verify(formatter, '-1', '-1')
     verify(formatter, '- 1', '-1')
@@ -38,7 +38,7 @@ def test_source_unary_op(db):
 
 def test_source_bool_op(db):
     """Source formatting: Test boolean ops."""
-    formatter = VuFormatter(db, VuFormat.SOURCE, 'file.adoc', 123)
+    formatter = VuFormatter(VuSourceStyler('file.adoc', 123))
 
     verify(formatter, 'a and b', '\n'.join(['(a and', '    b)']))
     verify(formatter, 'a and b and c and d', '\n'.join(['(a and', '    b and', '    c and', '    d)']))
@@ -56,7 +56,7 @@ def test_source_bool_op(db):
 
 def test_source_compare_op(db):
     """Source formatting: Test compare ops."""
-    formatter = VuFormatter(db, VuFormat.SOURCE, 'file.adoc', 123)
+    formatter = VuFormatter(VuSourceStyler('file.adoc', 123))
 
     verify(formatter, 'a == b', 'a == b')
     verify(formatter, 'a != b + 1', 'a != b + 1')
@@ -69,7 +69,7 @@ def test_source_compare_op(db):
 
 def test_source_binary_op(db):
     """Source formatting: Test binary ops."""
-    formatter = VuFormatter(db, VuFormat.SOURCE, 'file.adoc', 123)
+    formatter = VuFormatter(VuSourceStyler('file.adoc', 123))
 
     verify(formatter, 'a + b', 'a + b')
     verify(formatter, 'a - b', 'a - b')
@@ -91,7 +91,7 @@ def test_source_binary_op(db):
 
 def test_source_assign(db):
     """Source formatting: Test assignment."""
-    formatter = VuFormatter(db, VuFormat.SOURCE, 'file.adoc', 123)
+    formatter = VuFormatter(VuSourceStyler('file.adoc', 123))
 
     verify(formatter, 'a=b', 'a = b')
     verify(formatter, 'a=b+1', 'a = b + 1')
@@ -102,7 +102,7 @@ def test_source_assign(db):
 
 def test_source_call(db):
     """Source formatting: Test function calls."""
-    formatter = VuFormatter(db, VuFormat.SOURCE, 'file.adoc', 123)
+    formatter = VuFormatter(VuSourceStyler('file.adoc', 123))
 
     verify(formatter, 'f(x)', 'f(x)')
     verify(formatter, 'f(g(x))', 'f(g(x))')
@@ -111,7 +111,7 @@ def test_source_call(db):
 
 def test_source_subscript(db):
     """Source formatting: Test array subscripts."""
-    formatter = VuFormatter(db, VuFormat.SOURCE, 'file.adoc', 123)
+    formatter = VuFormatter(VuSourceStyler('file.adoc', 123))
 
     verify(formatter, 'a[b]', 'a[b]')
     verify(formatter, 'a[b + 1]', 'a[b + 1]')
@@ -119,7 +119,7 @@ def test_source_subscript(db):
 
 def test_source_attribute(db):
     """Source formatting: Test attribute selection."""
-    formatter = VuFormatter(db, VuFormat.SOURCE, 'file.adoc', 123)
+    formatter = VuFormatter(VuSourceStyler('file.adoc', 123))
 
     verify(formatter, 'a.b', 'a.b')
     verify(formatter, 'a.f(x)', 'a.f(x)')
@@ -128,7 +128,7 @@ def test_source_attribute(db):
 
 def test_source_builtins(db):
     """Source formatting: Test calling builtins."""
-    formatter = VuFormatter(db, VuFormat.SOURCE, 'file.adoc', 123)
+    formatter = VuFormatter(VuSourceStyler('file.adoc', 123))
 
     # function-style builtins
     verify(formatter, 'loop_index(info)', 'loop_index(info)')
@@ -143,7 +143,7 @@ def test_source_builtins(db):
 
 def test_source_if(db):
     """Source formatting: Test conditionals."""
-    formatter = VuFormatter(db, VuFormat.SOURCE, 'file.adoc', 123)
+    formatter = VuFormatter(VuSourceStyler('file.adoc', 123))
 
     input = '\n'.join(['if a:',
                        '    b'])
@@ -177,7 +177,7 @@ def test_source_if(db):
 
 def test_source_for(db):
     """Source formatting: Test for loops."""
-    formatter = VuFormatter(db, VuFormat.SOURCE, 'file.adoc', 123)
+    formatter = VuFormatter(VuSourceStyler('file.adoc', 123))
 
     input = '\n'.join(['for a in b:',
                        '    c'])
@@ -219,7 +219,7 @@ def test_source_for(db):
 
 def test_output(db):
     """Output formatting."""
-    formatter = VuFormatter(db, VuFormat.OUTPUT, 'file.adoc', 123)
+    formatter = VuFormatter(VuOutputStyler(db, 'file.adoc', 123))
 
     input = '\n'.join(['if info.has_pnext(VkSwapchainPresentFenceInfoEXT):',
                        ' for fence in info.pnext(VkSwapchainPresentFenceInfoEXT).pFences:',
