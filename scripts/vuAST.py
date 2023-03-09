@@ -218,7 +218,7 @@ class VuFormatter(ast.NodeVisitor):
     used during build to format the VU appropriately for output, e.g. with
     links, syntax highlighting etc."""
     def __init__(self, styler):
-        self.indent = 0
+        self.indent = styler.initialIndent
         """The current amount of indent."""
 
         self.formatted = []
@@ -228,9 +228,13 @@ class VuFormatter(ast.NodeVisitor):
         self.styler = styler
         """A helper used to style the formatted output."""
 
+        self.scopeStack = []
+        """A stack of indices into self.formatted, marking the beginning of the
+        scope.  Can be used by the styler to process the scope at the end."""
+
     def format(self, ast, isWholeTree = True):
         """Format a given AST"""
-        self.indent = 0
+        self.indent = self.styler.initialIndent
         self.formatted = []
 
         self.beginStyle('vu', '#')
@@ -254,9 +258,27 @@ class VuFormatter(ast.NodeVisitor):
         self.endLine()
         self.indent += 1
 
+        self.onBeginScope()
+
+    def onBeginScope(self):
+        self.scopeStack.append(len(self.formatted))
+        self.styler.onBeginScope()
+
     def endScope(self):
         # Nothing to do on scope end, just reduce the indent level
         self.indent -= 1
+
+        self.onEndScope()
+
+    def onEndScope(self):
+        # Give the styler a chance to post-process the scope.
+        scopeStart = self.scopeStack.pop()
+
+        beforeScope = self.formatted[:scopeStart]
+        scope = self.formatted[scopeStart:]
+
+        self.formatted = beforeScope + self.styler.onEndScope(scope)
+
 
     def beginParenthesis(self):
         # When parentheses are opened, add a larger indentation level for the
@@ -500,6 +522,11 @@ class VuFormatter(ast.NodeVisitor):
         self.endScope()
 
     def visit_For(self, node):
+
+        # For loops have an implicit scope (for their loop variable), make sure
+        # the styler is aware of that scope.
+        self.onBeginScope()
+
         # Output: for target in iter:
         #            body
         self.addKeyword('for')
@@ -510,6 +537,9 @@ class VuFormatter(ast.NodeVisitor):
         self.beginScope()
         self.addBody(node.body)
         self.endScope()
+
+        # End the implicit for-loop scope
+        self.onEndScope()
 
     def visit_While(self, node):
         # Output: while test:
@@ -607,6 +637,8 @@ class VuFormatter(ast.NodeVisitor):
         if not argumentIsParenthesized:
             self.endParenthesis()
 
+        self.formatted += self.styler.onCallVisit(node)
+
     def visit_Attribute(self, node):
         # Output: value.attr
         self.visit(node.value)
@@ -618,12 +650,16 @@ class VuFormatter(ast.NodeVisitor):
         else:
             self.add(node.attr)
 
+            self.formatted += self.styler.onAttributeVisit(node)
+
     def visit_Subscript(self, node):
         # Output: value[slice]
         self.visit(node.value)
         self.add('[')
         self.visit(node.slice)
         self.add(']')
+
+        self.formatted += self.styler.onSubscriptVisit(node)
 
     def visit_IfExp(self, node):
         # Output: body if test else orelse
@@ -685,6 +721,9 @@ class VuSourceStyler:
         self.endOfLine = '\n'
         """String used to indicate end-of-line."""
 
+        self.initialIndent = 0
+        """No indentation necessary when generating the output."""
+
     def verifyIdentical(self, originalAST, formatted):
         try:
             formattedTree = ast.parse(formatted, self.filename, 'exec')
@@ -717,6 +756,20 @@ class VuSourceStyler:
     def onBuiltInVisit(self, name):
         pass
 
+    def onBeginScope(self):
+        pass
+
+    def onEndScope(self, scope):
+        return scope
+
+    def onCallVisit(self, node):
+        return []
+
+    def onAttributeVisit(self, node):
+        return []
+
+    def onSubscriptVisit(self, node):
+        return []
 
 class VuOutputStyler:
     """A helper class used with VuFormatter to format the VU for built output"""
@@ -734,6 +787,9 @@ class VuOutputStyler:
         # ` +` is used to ensure line breaks in the output.
         self.endOfLine = ' +\n'
         """String used to indicate end-of-line."""
+
+        self.initialIndent = 0
+        """No indentation necessary when generating the output."""
 
     def verifyIdentical(self, originalAST, formatted):
         toVerify = formatted
@@ -787,6 +843,22 @@ class VuOutputStyler:
     def onBuiltInVisit(self, name):
         # Make sure `macro()` never makes it to the output.
         assert(name != 'macro')
+
+    def onBeginScope(self):
+        pass
+
+    def onEndScope(self, scope):
+        return scope
+
+    def onCallVisit(self, node):
+        return []
+
+    def onAttributeVisit(self, node):
+        return []
+
+    def onSubscriptVisit(self, node):
+        return []
+
 
 class VuTypeExtractor:
     """Helper class to extract types out of symbols used in the VU.  Used for
