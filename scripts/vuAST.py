@@ -291,12 +291,14 @@ class VuFormatter(ast.NodeVisitor):
         #      second_expression and
         #      third_expression):
         #   body
+        #
+        # Note that all users of this class use 2 spaces.
         self.add('(')
-        self.indent += 4
+        self.indent += 2
 
     def endParenthesis(self):
         self.add(')')
-        self.indent -= 4
+        self.indent -= 2
 
     def beginLine(self):
         self.add(self.styler.space * self.indent)
@@ -715,7 +717,7 @@ class VuSourceStyler:
         self.fileline = fileline
         """Location of VU."""
 
-        self.space = ' '
+        self.space = '  '
         """String used for indentation."""
 
         self.endOfLine = '\n'
@@ -781,7 +783,7 @@ class VuOutputStyler:
         self.fileline = fileline
         """Location of VU."""
 
-        self.space = '&nbsp;'
+        self.space = '&nbsp;&nbsp;'
         """String used for indentation."""
 
         # ` +` is used to ensure line breaks in the output.
