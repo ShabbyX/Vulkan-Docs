@@ -68,6 +68,7 @@ def format_vu(formatter, api, location, attribs, text)
   # Read back the results from the formatter
   messages = []
   formattedText = []
+  formattedEnglish = []
 
   # Get the error messages, if any
   while not formatter.eof? do
@@ -80,6 +81,7 @@ def format_vu(formatter, api, location, attribs, text)
 
   # Get the formatted text
   passed = FormatResult::FAILED
+  isEnglish = false
   while not formatter.eof? do
     line = formatter.gets
     if line.start_with? 'FORMAT-VU'
@@ -87,10 +89,17 @@ def format_vu(formatter, api, location, attribs, text)
         passed = FormatResult::PASSED
       elsif line.strip() == 'FORMAT-VU-ELIMINATED'
         passed = FormatResult::ELIMINATED
+      elsif line.strip() == 'FORMAT-VU-TEXT'
+        isEnglish = true
+        next
       end
       break
     end
-    formattedText.append(line.rstrip())
+    if isEnglish
+      formattedEnglish.append(line.rstrip())
+    else
+      formattedText.append(line.rstrip())
+    end
   end
 
   # Output messages, if any, and report failure if that's the case.
@@ -102,7 +111,46 @@ def format_vu(formatter, api, location, attribs, text)
     puts text
   end
 
-  return formattedText, passed
+  return formattedText, formattedEnglish, passed
+end
+
+def parse_formatted_english_line(line)
+  # Count what the nested level is
+  level = line.split(' ')[0].count('*')
+  raise 'Unexpected English-formatted line syntax (sublist level)' if level == 0
+  raise 'Unexpected English-formatted line syntax (sublist syntax)' if line[level] != ' '
+
+  return level, line[level+1..]
+end
+
+def parse_formatted_english(parent_item, nest_level, lines, start_index)
+  list = List.new parent_item, :ulist
+
+  current_index = start_index
+  while current_index < lines.length
+    level, content = parse_formatted_english_line(lines[current_index])
+
+    # If this sublist is finished, return to parent
+    if level < nest_level
+      break
+    end
+
+    # If level is as expected, add it as an item in the current list
+    if level == nest_level
+      list_item = ListItem.new list, content
+      list.items << list_item
+      current_index += 1
+      next
+    end
+
+    # Recursively create a sublist
+    raise 'Unexpected formatting, encountered nesting level difference more than one' if level > nest_level + 1
+    raise 'Internal error when parsing formatted English' if list.items.empty?
+    current_index = parse_formatted_english(list.items[-1], nest_level + 1, lines, current_index)
+  end
+
+  parent_item.blocks << list
+  return current_index
 end
 
 require 'json'
@@ -186,7 +234,7 @@ class VuFormatterTreeprocessor < Extensions::Treeprocessor
             current_attributes = current_attributes.reject { |attr| docattributes.include? attr }
 
             # Format the VU.  This parses and type checks the VU, so it can report failure.
-            formatted, passed = format_vu(formatter, api, item.source_location, current_attributes, text)
+            formatted, formattedEnglish, passed = format_vu(formatter, api, item.source_location, current_attributes, text)
 
             if passed == FormatResult::ELIMINATED
               # The VU was eliminated in this build
@@ -210,6 +258,7 @@ class VuFormatterTreeprocessor < Extensions::Treeprocessor
 
             # Replace the item text
             item.text = formatted
+            parse_formatted_english(item, 1, formattedEnglish, 0)
             items.append(item)
           end
           # Substitute the items of this VU list with whatever VU was left
