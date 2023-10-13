@@ -1100,6 +1100,16 @@ class VuFormatterText(ast.NodeVisitor):
     def visitNumber(self, num):
         return self.beginStyle('vu-number') + [str(num)] + self.endStyle()
 
+    def visitBuiltIn(self, builtin):
+        # Output: <<vu-builtin-name,[vu-builtin]#name#>>
+        formatted = []
+        formatted += self.beginStyle('vu-builtin')
+        formatted += self.beginLink('vu-builtin-' + builtin)
+        formatted.append(builtin)
+        formatted += self.endLink()
+        formatted += self.endStyle()
+        return formatted
+
     def visitAPIToken(self, token, prefix):
         return [prefix, token]
 
@@ -1472,7 +1482,7 @@ class VuFormatterText(ast.NodeVisitor):
             # Handle every other builtin
             args = [self.visit(arg) for arg in node.args]
             if node.func.id == 'pnext':
-                return self.language.pNext(args[0])
+                return self.visitBuiltIn(node.func.id) + [self.styler.parenOpen] + args[0] + [self.styler.parenClose]
             if node.func.id == 'loop_index':
                 return self.language.arrayIndex(args[0])
 
@@ -1493,13 +1503,19 @@ class VuFormatterText(ast.NodeVisitor):
                               'graphics_create_info',
                               'compute_create_info',
                               'raytracing_create_info']:
-            return self.language.createInfo(value)
+            return value + ['.'] + self.visitBuiltIn(node.func.attr) + [self.styler.parenOpen, self.styler.parenClose]
 
         return ['UNEXPECTED CALL ', node.func.attr]
 
     def visit_Attribute(self, node):
         assert(node.attr not in ATTR_BUILTINS.keys())
-        return self.language.attr(self.visit(node.value), ['pname:', node.attr])
+        value = self.visit(node.value)
+        # Asciidoc quirk:
+        #  * pname:x.y renders as `x.y`
+        #  * pname:x.pname:y renders as `x`.pname:y
+        #  * ...().pname:y rneders as `..().y`
+        pname = 'pname:' if value[-1][-1] == ')' else ''
+        return value + ['.', pname, node.attr]
 
     def visit_Subscript(self, node):
         return self.language.subscript(self.visit(node.value), self.visit(node.slice))
@@ -1841,7 +1857,7 @@ class VuLanguageEN:
         return ['let '] + variable + [' be '] + self.allAny(isAll, expectTrue)
 
     def foreach(self, target, iter):
-        return ['for each element of '] + iter + [', namely '] + target
+        return ['for each '] + target + [' in '] + iter
 
     def allAny(self, isAll, expectTrue):
         return ['all ' if isAll else 'either ',
@@ -1895,9 +1911,6 @@ class VuLanguageEN:
 
     def createInfo(self, value):
         return value + ['\'s create info']
-
-    def attr(self, value, attr):
-        return value + ['\'s '] + attr
 
     def subscript(self, array, index):
         return ['element '] + index + [' of '] + array
