@@ -1024,10 +1024,6 @@ class VuFormatterText(ast.NodeVisitor):
         self.language = language
         """A helper to generate the text in a given language"""
 
-        self.scopeTerminator = []
-        """A stack of scope terminators, based on how the scope was started
-        (comma, or new list) so it can be closed appropriately"""
-
     def format(self, ast):
         """Format a given AST"""
         self.indent = 0
@@ -1047,32 +1043,18 @@ class VuFormatterText(ast.NodeVisitor):
         return formatted
 
     def beginScope(self, body):
-        # If the body is only a single non-comment instruction, just separate it with a comma.  Otherwise 
-        # Scope begins with : and a new line
-        useComma = len([statement for statement in body if not isComment(statement)]) <= 1
-        if useComma:
-            self.scopeTerminator.append(None)
-            return [', ']
-        else:
-            self.indent += 1
-            self.scopeTerminator.append(self.endLine)
-            return [':'] + self.endLine()
+        self.indent += 1
+        return [':'] + self.endLine()
 
     def endScope(self, addTerminator = False):
-        terminator = self.scopeTerminator[-1]
-        self.scopeTerminator.pop()
-
-        if terminator is not None:
-            self.indent -= 1
-            # Only add the terminator if requested.  Normally, blocks don't add
-            # the terminator because they can be nested.  Additionally, every
-            # statement already gets an endLine() in visitBody.  So
-            # addTerminator is only for cases where a block is added where
-            # Python normally wouldn't have one (like conditions of an if).
-            if addTerminator:
-                return terminator()
-            return []
-
+        self.indent -= 1
+        # Only add the terminator if requested.  Normally, blocks don't add
+        # the terminator because they can be nested.  Additionally, every
+        # statement already gets an endLine() in visitBody.  So
+        # addTerminator is only for cases where a block is added where
+        # Python normally wouldn't have one (like conditions of an if).
+        if addTerminator:
+            return self.endLine()
         return []
 
     def beginLine(self):
@@ -1116,10 +1098,6 @@ class VuFormatterText(ast.NodeVisitor):
     def visitBody(self, statements):
         # Strip all comments
         statements = [statement for statement in statements if not isComment(statement)]
-
-        # If there is only one statement, inline it.
-        if len(statements) == 1:
-            return self.visit(statements[0])
 
         # Handle a list of statements, adding indentation appropriately
         # Do not end the last line.  If nested, the parent body will end the
@@ -1325,22 +1303,21 @@ class VuFormatterText(ast.NodeVisitor):
             testNode = testNode.operand
             expectTrue = False
 
+        isAnd = True
+        values = [testNode]
         if isinstance(testNode, ast.BoolOp):
-            # If multiple conditions, turn it into a list.
-            assert(len(testNode.values) > 1)
             isAnd = isinstance(testNode.op, ast.And)
+            values = testNode.values
 
+        if len(values) > 1:
             formatted += self.language.ifAllAny(isAnd, isElif, expectTrue)
-            formatted += self.beginScope(testNode.values)
-            formatted += self.visitBooleanList(testNode.values, isAnd, True, False)
-            formatted += self.endScope(addTerminator = True)
-            formatted += self.beginLine()
         else:
-            # Otherwise, just output it inline with the if
-            condition = self.visitBoolean(testNode, expectTrue, False)
-            formatted += self.language.ifCond(condition, isElif)
-            formatted.append(', ')
+            formatted += self.language.ifTrueFalse(isElif, expectTrue)
+        formatted += self.beginScope(values)
+        formatted += self.visitBooleanList(values, isAnd, True, False)
+        formatted += self.endScope(addTerminator = True)
 
+        formatted += self.beginLine()
         formatted += self.language.then()
 
         formatted += self.beginScope(node.body)
@@ -1839,6 +1816,12 @@ class VuLanguageEN:
                 'all ' if isAll else 'either ',
                 'of the following ',
                 'are ' if isAll else 'is ',
+                'true' if expectTrue else 'false']
+
+    def ifTrueFalse(self, isElif, expectTrue):
+        return ['otherwise, ' if isElif else '',
+                'if ',
+                'the following is ',
                 'true' if expectTrue else 'false']
 
     def ifCond(self, condition, isElif):
