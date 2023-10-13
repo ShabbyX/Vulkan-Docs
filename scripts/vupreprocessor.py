@@ -148,8 +148,9 @@ def processFormatCommand(command, registry, versions, extensions, featureAvailab
 
     vu.astExpanded = stripped
     formatted = vu.format(VuFormat.OUTPUT, registry)
+    formattedText = vu.formatText(registry)
 
-    return respondFormat([formatted], 'SUCCESS')
+    return respondFormat([formatted, 'FORMAT-VU-TEXT', formattedText], 'SUCCESS')
 
 
 if __name__ == '__main__':

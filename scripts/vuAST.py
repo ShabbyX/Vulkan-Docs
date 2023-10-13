@@ -1009,6 +1009,537 @@ class VuFormatter(ast.NodeVisitor):
         self.add(']')
 
 
+class VuFormatterText(ast.NodeVisitor):
+    """A helper class to turn a VU into text
+
+    This is used during build to turn the VU into text.
+    **NOTE: this is a prototype**"""
+    def __init__(self, styler, language):
+        self.indent = 0
+        """The current amount of indent."""
+
+        self.styler = styler
+        """A helper used to style the formatted output."""
+
+        self.language = language
+        """A helper to generate the text in a given language"""
+
+    def format(self, ast):
+        """Format a given AST"""
+        self.indent = 0
+        formatted = []
+
+        formatted += self.beginStyle('vu', '#')
+        formatted += self.visit(ast)
+        formatted += self.endStyle('#')
+
+        # Join the pieces to get the final output
+        formatted = ''.join(formatted)
+
+        # Make sure single-line VUs also get a *
+        if formatted[0] != '*':
+            formatted = '* ' + formatted
+
+        return formatted
+
+    def beginScope(self):
+        self.indent += 1
+        return [':'] + self.endLine()
+
+    def beginApiScope(self):
+        self.styler.onBeginScope()
+        return self.beginScope()
+
+    def endScope(self, addTerminator = False):
+        self.indent -= 1
+        # Only add the terminator if requested.  Normally, blocks don't add
+        # the terminator because they can be nested.  Additionally, every
+        # statement already gets an endLine() in visitBody.  So
+        # addTerminator is only for cases where a block is added where
+        # Python normally wouldn't have one (like conditions of an if).
+        if addTerminator:
+            return self.endLine()
+        return []
+
+    def endApiScope(self, scope, addTerminator = False):
+        return self.styler.onEndScope(scope) + self.endScope(addTerminator)
+
+    def beginLine(self):
+        return ['*' * (self.indent + 1) + ' ']
+
+    def endLine(self):
+        return [self.styler.endOfLine]
+
+    def beginStyle(self, style, delimiter = '##'):
+        return self.styler.beginStyle(style, delimiter)
+
+    def endStyle(self, delimiter = '##'):
+        return self.styler.endStyle(delimiter)
+
+    def beginLink(self, link):
+        return self.styler.beginLink(link)
+
+    def endLink(self):
+        return self.styler.endLink()
+
+    def visitOperator(self, op, preSpace = ' ', postSpace = ' '):
+        # Output: ` op `
+        return [preSpace] + self.beginStyle('vu-operator') + [op] + self.endStyle() + [postSpace]
+
+    def visitNumber(self, num):
+        return self.beginStyle('vu-number') + [str(num)] + self.endStyle()
+
+    def visitBuiltIn(self, builtin):
+        # Output: <<vu-builtin-name,[vu-builtin]#name#>>
+        formatted = []
+        formatted += self.beginStyle('vu-builtin')
+        formatted += self.beginLink('vu-builtin-' + builtin)
+        formatted.append(builtin)
+        formatted += self.endLink()
+        formatted += self.endStyle()
+        return formatted
+
+    def visitAPIToken(self, token, prefix):
+        return [prefix, token]
+
+    def visitBody(self, statements):
+        # Strip all comments
+        statements = [statement for statement in statements if not isComment(statement)]
+
+        # Handle a list of statements, adding indentation appropriately
+        # Do not end the last line.  If nested, the parent body will end the
+        # line.
+        first = True
+        formatted = []
+        for statement in statements:
+            if not first:
+                formatted += self.endLine()
+            first = False
+
+            formatted += self.beginLine()
+            formatted += self.visit(statement)
+
+        return formatted
+
+    # Map of op classes to their textual representation
+    opMap = {
+        # Found in BoolOp
+        ast.And: 'UNEXPECTED-AND',
+        ast.Or: 'UNEXPECTED-OR',
+        # Found in BinOp
+        ast.Add: '+',
+        ast.Sub: '-',
+        ast.Mult: '*',
+        ast.MatMult: '@',
+        ast.Div: '/',
+        ast.Mod: '%',
+        ast.Pow: '**',
+        ast.LShift: '<<',
+        ast.RShift: '>>',
+        ast.BitOr: '|',
+        ast.BitXor: '^',
+        ast.BitAnd: '&',
+        ast.FloorDiv: '//',
+        # Found in UnaryOp
+        ast.Invert: '~',
+        ast.Not: 'UNEXPECTED-NOT',
+        ast.UAdd: '+',
+        ast.USub: '-',
+        # Found in CompOp
+        ast.Eq: 'UNEXPECTED-EQ',
+        ast.NotEq: 'UNEXPECTED-NOTEQ',
+        ast.Lt: 'UNEXPECTED-LT',
+        ast.LtE: 'UNEXPECTED-LTE',
+        ast.Gt: 'UNEXPECTED-GT',
+        ast.GtE: 'UNEXPECTED-GTE',
+        ast.Is: 'UNEXPECTED-IS',
+        ast.IsNot: 'UNEXPECTED-ISNOT',
+        ast.In: 'UNEXPECTED-IN',
+        ast.NotIn: 'UNEXPECTED-NOTIN',
+    }
+
+    def visitMaybeParentheses(self, value, needsParentheses):
+        formatted = []
+
+        if needsParentheses:
+            formatted.append(self.styler.parenOpen)
+
+        formatted += self.visit(value)
+
+        if needsParentheses:
+            self.append(self.styler.parenClose)
+
+        return formatted
+
+    def visitParenthesizedExpression(self, value):
+        # Add parentheses around value unless obviously unnecessary.  This
+        # function is called when `value` is used in another expression with an
+        # operator, and operator priorities would change the expression if not
+        # parenthesized.
+        needsParentheses = value.__class__ not in [ast.Call, ast.Attribute,
+                                                   ast.Subscript, ast.Name,
+                                                   ast.Constant, ast.BoolOp]
+
+        return self.visitMaybeParentheses(value, needsParentheses)
+
+    def visitBinaryExpression(self, left, op, right):
+        # Output: (left) op (right)
+        leftOp = left.op if isinstance(left, ast.BinOp) else None
+        rightOp = right.op if isinstance(right, ast.BinOp) else None
+        formatted = []
+
+        formatted += self.visitParenthesizedExpression(left)
+
+        opText = self.opMap[op.__class__]
+        formatted += self.visitOperator(opText)
+
+        formatted += self.visitParenthesizedExpression(right)
+
+        return formatted
+
+    def visitBoolean(self, node, expectTrue, must):
+        # If the boolean expression has a not, invert it.
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return self.visitBoolean(node.operand, not expectTrue, must)
+
+        # Only not is a boolean unary op.
+        assert(not isinstance(node, ast.UnaryOp))
+
+        # If the expression is just a name, generate:
+        #   name is true/false
+        if isinstance(node, ast.Name):
+            return self.language.isTrue(self.styler.getNameSymbol(node), expectTrue, must)
+
+        # If the expression is a comparison, generate something based on the op, such as:
+        #    x is greater than y
+        #    x is not equal to y
+        #    x is equal to y
+        if isinstance(node, ast.Compare):
+            assert(len(node.ops) == 1)
+            op = node.ops[0]
+            left = self.visit(node.left)
+            right = self.visit(node.comparators[0])
+
+            if isinstance(op, ast.Eq):
+                return self.language.equals(left, right, expectTrue, must)
+            elif isinstance(op, ast.NotEq):
+                return self.language.equals(left, right, not expectTrue, must)
+            elif isinstance(op, ast.Lt):
+                return self.language.lessThan(left, right, expectTrue, must)
+            elif isinstance(op, ast.LtE):
+                return self.language.lessThanOrEqual(left, right, expectTrue, must)
+            elif isinstance(op, ast.Gt):
+                return self.language.greaterThan(left, right, expectTrue, must)
+            elif isinstance(op, ast.GtE):
+                return self.language.greaterThanOrEqual(left, right, expectTrue, must)
+            else:
+                assert(False)
+                return ['UNEXPECTED COMPARISON OP']
+
+        if isinstance(node, ast.BoolOp):
+            isAnd = isinstance(node.op, ast.And)
+
+            formatted = []
+            formatted += self.language.allAny(isAnd, expectTrue)
+            formatted += self.beginScope()
+            formatted += self.visitBooleanList(node.values, isAnd, True, must)
+            formatted += self.endScope()
+            return formatted
+
+        if isinstance(node, ast.Call):
+            args = [self.visit(arg) for arg in node.args]
+            if isinstance(node.func, ast.Name):
+                # Handle builtins that return bool
+                assert(not isComment(node))
+                if node.func.id == 'has_pnext':
+                    return self.language.hasPNext(args[0], expectTrue, must)
+                if node.func.id == 'is_version':
+                    version = ['Vulkan '] + args[0] + ['.'] + args[1]
+                    return self.language.isVersion(version, expectTrue, must)
+                if node.func.id == 'is_ext_enabled':
+                    return self.language.isExtEnabled(args[0], expectTrue, must)
+                if node.func.id == 'is_feature_enabled':
+                    return self.language.isFeatureEnabled(args[0], expectTrue, must)
+                if node.func.id == 'externally_synchronized':
+                    return self.language.isExternallySynchronized(args[0], expectTrue, must)
+
+            assert(isinstance(node.func, ast.Attribute) and node.func.attr in ATTR_BUILTINS.keys())
+            value = self.visit(node.func.value)
+            # Handle builtins that return bool
+            if node.func.attr == 'has_pnext':
+                return self.language.attributeHasPNext(value, args[0], expectTrue, must)
+            if node.func.attr == 'has_bit':
+                return self.language.hasBit(value, args[0], expectTrue, must)
+            if node.func.attr == 'any':
+                return self.language.any(value, expectTrue, must)
+            if node.func.attr == 'none':
+                return self.language.none(value, expectTrue, must)
+            if node.func.attr == 'valid':
+                return self.language.valid(value, expectTrue, must)
+
+        assert(False)
+        return ['UNHANDLED BOOLEAN EXPRESSION']
+
+    def visitBooleanList(self, nodes, isAnd, expectTrue, must):
+        formatted = []
+        isFirst = True
+        for node in nodes:
+            if not isFirst:
+                formatted += self.endLine()
+            isFirst = False
+
+            formatted += self.beginLine()
+            formatted += self.visitBoolean(node, expectTrue, must)
+
+        return formatted
+
+    def visitIfBlock(self, node, keyword):
+        # Output: if ...:
+        #         * condition 1
+        #         * condition 2
+        #         then:
+        #         * body
+
+        formatted = []
+
+        # Turn `if (..)` into `if ... true:`.  Turn `if not (...)` into `if ... false:`
+        isElif = keyword == 'elif'
+        testNode = node.test
+        expectTrue = True
+        if isinstance(testNode, ast.UnaryOp) and isinstance(testNode.op, ast.Not):
+            testNode = testNode.operand
+            expectTrue = False
+
+        isAnd = True
+        values = [testNode]
+        if isinstance(testNode, ast.BoolOp):
+            isAnd = isinstance(testNode.op, ast.And)
+            values = testNode.values
+
+        if len(values) > 1:
+            formatted += self.language.ifAllAny(isAnd, isElif, expectTrue)
+        else:
+            formatted += self.language.ifTrueFalse(isElif, expectTrue)
+        formatted += self.beginScope()
+        formatted += self.visitBooleanList(values, isAnd, True, False)
+        formatted += self.endScope(addTerminator = True)
+
+        formatted += self.beginLine()
+        formatted += self.language.then()
+
+        formatted += self.beginApiScope()
+        formattedBody = self.visitBody(node.body)
+        formatted += self.endApiScope(formattedBody)
+
+        return formatted
+
+    def visit_Module(self, node):
+        return self.visitBody(node.body)
+
+    def visit_Expr(self, node):
+        return self.visit(node.value)
+
+    def visit_Assign(self, node):
+        assert(len(node.targets) == 1)
+        target = self.visit(node.targets[0])
+        formatted = []
+
+        valueNode = node.value
+        expectTrue = True
+        if isinstance(valueNode, ast.UnaryOp) and isinstance(valueNode.op, ast.Not):
+            valueNode = valueNode.operand
+            expectTrue = False
+
+        if isinstance(valueNode, ast.BoolOp):
+            isAnd = isinstance(valueNode.op, ast.And)
+
+            formatted += self.language.letComplex(target, isAnd, expectTrue)
+            formatted += self.beginScope()
+            formatted += self.visitBooleanList(valueNode.values, isAnd, True, False)
+            formatted += self.endScope()
+            return formatted
+
+        formatted += self.language.let(target, self.visit(node.value))
+        return formatted
+
+    def visit_Pass(self, node):
+        return ['nothing']
+
+    def visit_If(self, node):
+        # Output: if condition:
+        #         * body
+        #         otherwise:
+        #         * body
+        formatted = self.visitIfBlock(node, 'if')
+
+        # If there is an else block, output that as well.  If the else block
+        # itself is an if node, flatten the chain similar to python's `elif`
+        while len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If):
+            node = node.orelse[0]
+            formatted += self.endLine()
+            formatted += self.beginLine()
+            formatted += self.visitIfBlock(node, 'elif')
+
+        if len(node.orelse) > 0:
+            formatted += self.endLine()
+            formatted += self.beginLine()
+            formatted += self.language.orelse()
+            formatted += self.beginApiScope()
+            formattedBody = self.visitBody(node.orelse)
+            formatted += self.endApiScope(formattedBody)
+
+        return formatted
+
+    def visit_For(self, node):
+        # Output: for each element of Xs, namely X:
+        #         * body
+        target = self.visit(node.target)
+        iter = self.visit(node.iter)
+
+        # For loops have an implicit scope (for their loop variable), make sure
+        # the styler is aware of that scope.
+        self.styler.onBeginScope()
+
+        formatted = self.language.foreach(target, iter)
+        formatted += self.beginApiScope()
+        formattedBody = self.visitBody(node.body)
+        formatted += self.endApiScope(formattedBody)
+
+        formatted = self.styler.onEndScope(formatted)
+
+        return formatted
+
+    def visit_While(self, node):
+        return ['WHILE IS NOT SUPPORTED']
+
+    def visit_Break(self, node):
+        return ['BREAK IS NOT SUPPORTED']
+
+    def visit_Continue(self, node):
+        return ['CONTINUE IS NOT SUPPORTED']
+
+    def visit_BoolOp(self, node):
+        # Boolean lists are expanded to multiple lines, so everywhere they may
+        # have happened should already handle them.  Some obscure cases are not
+        # handled right now, such as with (x && y) == (z || w)
+        return ['FIXME BOOL OP IN UNUSUAL EXPRESSION']
+
+    def visit_UnaryOp(self, node):
+        if isinstance(node.op, ast.Not):
+            # See comment on visit_BoolOp
+            assert(not isinstance(node.operand, ast.BoolOp))
+            return self.visitBoolean(node.operand, False, False)
+
+        formatted = [self.opMap[node.op.__class__]]
+        formatted += self.visitParenthesizedExpression(node.operand)
+        return formatted
+
+    def visit_BinOp(self, node):
+        return self.visitBinaryExpression(node.left, node.op, node.right);
+
+    def visit_Compare(self, node):
+        assert(len(node.ops) == 1)
+        return self.visitBoolean(node, True, False)
+
+    def visitCallHelper(self, node):
+        # Comments should be stripped before attempting to traverse a block
+        assert(not isCommentCall(node))
+
+        if isinstance(node.func, ast.Name):
+            # For boolean functions, use visitBoolean which already handles them
+            if FUNC_BUILTINS[node.func.id].returnType == BOOL_TYPE:
+                return self.visitBoolean(node, True, False)
+
+            # Handle functions that accept a bool argument
+            if node.func.id == 'require':
+                condition = node.args[0]
+                expectTrue = True
+                if isinstance(condition, ast.UnaryOp) and isinstance(condition.op, ast.Not):
+                    condition = condition.operand
+                    expectTrue = False
+
+                if isinstance(condition, ast.BoolOp):
+                    isAnd = isinstance(condition.op, ast.And)
+                    formatted = self.language.mustAllAny(isAnd, expectTrue)
+                    formatted += self.beginScope()
+                    # Don't use must in the list, the "must be true/false" before the list is enough indication.
+                    formatted += self.visitBooleanList(condition.values, isAnd, expectTrue, False)
+                    formatted += self.endScope()
+                    return formatted
+
+                return self.visitBoolean(node.args[0], expectTrue, True)
+
+            # Handle every other builtin
+            args = [self.visit(arg) for arg in node.args]
+            if node.func.id == 'pnext':
+                return self.visitBuiltIn(node.func.id) + [self.styler.parenOpen] + args[0] + [self.styler.parenClose]
+            if node.func.id == 'loop_index':
+                return self.language.arrayIndex(args[0])
+
+            return ['UNEXPECTED CALL ', node.func.id]
+
+        assert(isinstance(node.func, ast.Attribute))
+
+        # For boolean functions, use visitBoolean which already handles them
+        if ATTR_BUILTINS[node.func.attr].funcType.returnType == BOOL_TYPE:
+            return self.visitBoolean(node, True, False)
+
+        # Handle every other builtin
+        value = self.visit(node.func.value)
+        args = [self.visit(arg) for arg in node.args]
+        if node.func.attr == 'pnext':
+            return self.language.attributePNext(value, args[0])
+        if node.func.attr in ['create_info',
+                              'graphics_create_info',
+                              'compute_create_info',
+                              'raytracing_create_info']:
+            return value + ['.'] + self.visitBuiltIn(node.func.attr) + [self.styler.parenOpen, self.styler.parenClose]
+
+        return ['UNEXPECTED CALL ', node.func.attr]
+
+    def visit_Call(self, node):
+        return self.visitCallHelper(node) + self.styler.onCallVisit(node)
+
+    def visit_Attribute(self, node):
+        assert(node.attr not in ATTR_BUILTINS.keys())
+        value = self.visit(node.value)
+        # Asciidoc quirk:
+        #  * pname:x.y renders as `x.y`
+        #  * pname:x.pname:y renders as `x`.pname:y
+        #  * ...().pname:y rneders as `..().y`
+        pname = 'pname:' if value[-1][-1] == ')' else ''
+        return value + ['.', pname, node.attr] + self.styler.onAttributeVisit(node)
+
+    def visit_Subscript(self, node):
+        return self.language.subscript(self.visit(node.value), self.visit(node.slice)) + self.styler.onSubscriptVisit(node)
+
+    def visit_IfExp(self, node):
+        return ['FIXME UNWEILDY IN TEXT']
+
+    def visit_Constant(self, node):
+        # Output: [vu-number]#value#
+        formatted = self.beginStyle('vu-number')
+        if isinstance(node.value, str):
+            formatted += ['"', + node.value, '"']
+        else:
+            formatted.append(str(node.value))
+        formatted += self.endStyle()
+        return formatted
+
+    def visit_Name(self, node):
+        assert(node.id not in FUNC_BUILTINS.keys())
+        return self.styler.getNameSymbol(node)
+
+    # Although unsupported, the following are also output correctly for the
+    # sake of VuVerifier.  When the expression is invalid, it will output why
+    # and would need the expression formatted well.
+    def visit_Tuple(self, node):
+        return ['TUPLE NOT SUPPORTED']
+
+    def visit_List(self, node):
+        return ['LIST NOT SUPPORTED']
+
+
 class VuSourceStyler:
     """A helper class used with VuFormatter to format the VU for source adoc
     files"""
@@ -1210,6 +1741,190 @@ class VuOutputStyler:
 
     def onSubscriptVisit(self, node):
         return []
+
+
+class VuTextStyler:
+    """A helper class used with VuFormatter to format the VU for built output"""
+    def __init__(self, registry, filename, fileline):
+        self.outputStyler = VuOutputStyler(registry, filename, fileline)
+
+        self.space = ''
+        self.hashSymbol = ''
+        self.endOfLine = '\n'
+        self.parenOpen = self.outputStyler.parenOpen
+        self.parenClose = self.outputStyler.parenClose
+
+    def verifyIdentical(self, originalAST, formatted):
+        pass
+
+    def beginStyle(self, style, delimiter):
+        if delimiter == '#':
+            return []
+        return self.outputStyler.beginStyle(style, delimiter)
+
+    def endStyle(self, delimiter):
+        if delimiter == '#':
+            return []
+        return self.outputStyler.endStyle(delimiter)
+
+    def beginLink(self, link):
+        return self.outputStyler.beginLink(link)
+
+    def endLink(self):
+        return self.outputStyler.endLink()
+
+    def getNameSymbol(self, node):
+        symbol = self.outputStyler.getNameSymbol(node)
+        if len(symbol) == 1:
+            symbol = ['pname:'] + symbol
+        return symbol
+
+    def onBeginScope(self):
+        pass
+
+    def onEndScope(self, scope):
+        return scope
+
+    def onCallVisit(self, node):
+        return []
+
+    def onAttributeVisit(self, node):
+        return []
+
+    def onSubscriptVisit(self, node):
+        return []
+
+
+class VuLanguageEN:
+    """Helper class to generate English out of the VUs"""
+    def __init__(self):
+        pass
+
+    def isOrMustBe(self, expectTrue, must):
+        return [' must: ' if must else ' is ',
+                '' if expectTrue else 'not ',
+                'be ' if must else '']
+
+    def doesOrMustDo(self, expectTrue, must, verb, verbs):
+        if must:
+            return [' must: ',
+                    '' if expectTrue else 'not ',
+                    verb,
+                    ' ']
+        if expectTrue:
+            return [' ', verbs, ' ']
+        return [' does not ', verb, ' ']
+
+    def isTrue(self, name, expectTrue, must):
+        return name + self.isOrMustBe(True, must) + ['true' if expectTrue else 'false']
+
+    def equals(self, left, right, expectTrue, must):
+        return left + self.isOrMustBe(expectTrue, must) + ['equal to '] + right
+
+    def lessThan(self, left, right, expectTrue, must):
+        if not expectTrue:
+            return self.greaterThanOrEqual(left, right, True, must)
+        return left + self.isOrMustBe(True, must) + ['smaller than '] + right
+
+    def lessThanOrEqual(self, left, right, expectTrue, must):
+        if not expectTrue:
+            return self.greaterThan(left, right, True, must)
+        return left + self.isOrMustBe(True, must) + ['smaller than or equal to '] + right
+
+    def greaterThan(self, left, right, expectTrue, must):
+        if not expectTrue:
+            return self.lessThanOrEqual(left, right, True, must)
+        return left + self.isOrMustBe(True, must) + ['greater than '] + right
+
+    def greaterThanOrEqual(self, left, right, expectTrue, must):
+        if not expectTrue:
+            return self.lessThan(left, right, True, must)
+        return left + self.isOrMustBe(True, must) + ['greater than or equal to '] + right
+
+    def ifAllAny(self, isAll, isElif, expectTrue):
+        return ['otherwise, ' if isElif else '',
+                'if ',
+                'all ' if isAll else 'either ',
+                'of the following ',
+                'are ' if isAll else 'is ',
+                'true' if expectTrue else 'false']
+
+    def ifTrueFalse(self, isElif, expectTrue):
+        return ['otherwise, ' if isElif else '',
+                'if ',
+                'the following is ',
+                'true' if expectTrue else 'false']
+
+    def ifCond(self, condition, isElif):
+        return ['otherwise, if ' if isElif else 'if '] + condition
+
+    def orelse(self):
+        return ['otherwise']
+
+    def then(self):
+        return ['then']
+
+    def let(self, variable, what):
+        return ['let '] + variable + [' be '] + what
+
+    def letComplex(self, variable, isAll, expectTrue):
+        return ['let '] + variable + [' be '] + self.allAny(isAll, expectTrue)
+
+    def foreach(self, target, iter):
+        return ['for each '] + target + [' in '] + iter
+
+    def allAny(self, isAll, expectTrue):
+        return ['all ' if isAll else 'either ',
+                'of the following ',
+                'are ' if isAll else 'is ',
+                'true' if expectTrue else 'false']
+
+    def mustAllAny(self, isAll, expectTrue):
+        return ['all ' if isAll else 'either ',
+                'of the following must: be ',
+                'true' if expectTrue else 'false']
+
+    def hasPNext(self, struct, expectTrue, must):
+        return struct + [' struct'] + self.isOrMustBe(expectTrue, must) + ['in the pname:pNext chain']
+
+    def attributeHasPNext(self, value, struct, expectTrue, must):
+        return struct + [' struct'] + self.isOrMustBe(expectTrue, must) + ['in the pname:pNext chain of '] + value
+
+    def pNext(self, struct):
+        return ['the '] + struct + [' struct in the pname:pNext chain']
+
+    def attributePNext(self, struct):
+        return ['the '] + struct + [' struct in the pname:pNext chain of '] + value
+
+    def arrayIndex(self, target):
+        return ['the index of '] + target
+
+    def isVersion(self, version, expectTrue, must):
+        return ['slink:VkPhysicalDeviceProperties::pname:apiVersion'] + self.isOrMustBe(expectTrue, must) + version
+
+    def isExtEnabled(self, extension, expectTrue, must):
+        return ['the `apiext:'] + extension + [' extension'] + self.isOrMustBe(expectTrue, must) + ['enabled']
+
+    def isFeatureEnabled(self, feature, expectTrue, must):
+        return ['the '] + feature + [' feature'] + self.isOrMustBe(expectTrue, must) + ['enabled']
+
+    def isExternallySynchronized(self, what, expectTrue, must):
+        return what + self.isOrMustBe(expectTrue, must) + ['<<fundamentals-threadingbehavior,externally synchronized>>']
+
+    def hasBit(self, value, bit, expectTrue, must):
+        return value + self.doesOrMustDo(expectTrue, must, 'contain', 'contains') + bit
+
+    def any(self, value, expectTrue, must):
+        return value + self.isOrMustBe(not expectTrue, must) + ['`0`']
+
+    def none(self, value, expectTrue, must):
+        return self.any(value, not expectTrue, must)
+
+    def valid(self, value, expectTrue, must):
+        return value + self.isOrMustBe(expectTrue, must) + ['a valid handle of its type']
+
+    def subscript(self, array, index):
+        return ['element '] + index + [' of '] + array
 
 
 class VuTypeExtractor:
@@ -2166,6 +2881,14 @@ class VuAST:
             styler = VuOutputStyler(registry, self.filename, self.fileline)
 
         formatter = VuFormatter(styler)
+        return formatter.format(ast)
+
+    def formatText(self, registry):
+        """Format the AST as English."""
+        ast = self.astExpanded
+        styler = VuTextStyler(registry, self.filename, self.fileline)
+        language = VuLanguageEN()
+        formatter = VuFormatterText(styler, language)
         return formatter.format(ast)
 
     def getParameterTag(self):
