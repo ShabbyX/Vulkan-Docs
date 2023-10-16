@@ -1149,8 +1149,7 @@ overlap in memory.
 .Valid Usage
 ****
   * [[VUID-vkCmdCopyMemoryIndirectNV-None-07653]]
-    The <<features-indirectCopy, pname:indirectCopy>> feature must: be
-    enabled
+    require(is_feature_enabled(indirectCopy))
   * [[VUID-vkCmdCopyMemoryIndirectNV-copyBufferAddress-07654]]
     pname:copyBufferAddress must: be 4 byte aligned
   * [[VUID-vkCmdCopyMemoryIndirectNV-stride-07655]]
