@@ -1042,9 +1042,13 @@ class VuFormatterText(ast.NodeVisitor):
 
         return formatted
 
-    def beginScope(self, body):
+    def beginScope(self):
         self.indent += 1
         return [':'] + self.endLine()
+
+    def beginApiScope(self):
+        self.styler.onBeginScope()
+        return self.beginScope()
 
     def endScope(self, addTerminator = False):
         self.indent -= 1
@@ -1056,6 +1060,9 @@ class VuFormatterText(ast.NodeVisitor):
         if addTerminator:
             return self.endLine()
         return []
+
+    def endApiScope(self, scope, addTerminator = False):
+        return self.styler.onEndScope(scope) + self.endScope(addTerminator)
 
     def beginLine(self):
         return ['*' * (self.indent + 1) + ' ']
@@ -1234,7 +1241,7 @@ class VuFormatterText(ast.NodeVisitor):
 
             formatted = []
             formatted += self.language.allAny(isAnd, expectTrue)
-            formatted += self.beginScope(node.values)
+            formatted += self.beginScope()
             formatted += self.visitBooleanList(node.values, isAnd, True, must)
             formatted += self.endScope()
             return formatted
@@ -1313,16 +1320,16 @@ class VuFormatterText(ast.NodeVisitor):
             formatted += self.language.ifAllAny(isAnd, isElif, expectTrue)
         else:
             formatted += self.language.ifTrueFalse(isElif, expectTrue)
-        formatted += self.beginScope(values)
+        formatted += self.beginScope()
         formatted += self.visitBooleanList(values, isAnd, True, False)
         formatted += self.endScope(addTerminator = True)
 
         formatted += self.beginLine()
         formatted += self.language.then()
 
-        formatted += self.beginScope(node.body)
-        formatted += self.visitBody(node.body)
-        formatted += self.endScope()
+        formatted += self.beginApiScope()
+        formattedBody = self.visitBody(node.body)
+        formatted += self.endApiScope(formattedBody)
 
         return formatted
 
@@ -1347,7 +1354,7 @@ class VuFormatterText(ast.NodeVisitor):
             isAnd = isinstance(valueNode.op, ast.And)
 
             formatted += self.language.letComplex(target, isAnd, expectTrue)
-            formatted += self.beginScope(valueNode.values)
+            formatted += self.beginScope()
             formatted += self.visitBooleanList(valueNode.values, isAnd, True, False)
             formatted += self.endScope()
             return formatted
@@ -1377,9 +1384,9 @@ class VuFormatterText(ast.NodeVisitor):
             formatted += self.endLine()
             formatted += self.beginLine()
             formatted += self.language.orelse()
-            formatted += self.beginScope(node.orelse)
-            formatted += self.visitBody(node.orelse)
-            formatted += self.endScope()
+            formatted += self.beginApiScope()
+            formattedBody = self.visitBody(node.orelse)
+            formatted += self.endApiScope(formattedBody)
 
         return formatted
 
@@ -1389,10 +1396,16 @@ class VuFormatterText(ast.NodeVisitor):
         target = self.visit(node.target)
         iter = self.visit(node.iter)
 
+        # For loops have an implicit scope (for their loop variable), make sure
+        # the styler is aware of that scope.
+        self.styler.onBeginScope()
+
         formatted = self.language.foreach(target, iter)
-        formatted += self.beginScope(node.body)
-        formatted += self.visitBody(node.body)
-        formatted += self.endScope()
+        formatted += self.beginApiScope()
+        formattedBody = self.visitBody(node.body)
+        formatted += self.endApiScope(formattedBody)
+
+        formatted = self.styler.onEndScope(formatted)
 
         return formatted
 
@@ -1428,7 +1441,7 @@ class VuFormatterText(ast.NodeVisitor):
         assert(len(node.ops) == 1)
         return self.visitBoolean(node, True, False)
 
-    def visit_Call(self, node):
+    def visitCallHelper(self, node):
         # Comments should be stripped before attempting to traverse a block
         assert(not isCommentCall(node))
 
@@ -1448,7 +1461,7 @@ class VuFormatterText(ast.NodeVisitor):
                 if isinstance(condition, ast.BoolOp):
                     isAnd = isinstance(condition.op, ast.And)
                     formatted = self.language.mustAllAny(isAnd, expectTrue)
-                    formatted += self.beginScope(condition.values)
+                    formatted += self.beginScope()
                     # Don't use must in the list, the "must be true/false" before the list is enough indication.
                     formatted += self.visitBooleanList(condition.values, isAnd, expectTrue, False)
                     formatted += self.endScope()
@@ -1484,6 +1497,9 @@ class VuFormatterText(ast.NodeVisitor):
 
         return ['UNEXPECTED CALL ', node.func.attr]
 
+    def visit_Call(self, node):
+        return self.visitCallHelper(node) + self.styler.onCallVisit(node)
+
     def visit_Attribute(self, node):
         assert(node.attr not in ATTR_BUILTINS.keys())
         value = self.visit(node.value)
@@ -1492,10 +1508,10 @@ class VuFormatterText(ast.NodeVisitor):
         #  * pname:x.pname:y renders as `x`.pname:y
         #  * ...().pname:y rneders as `..().y`
         pname = 'pname:' if value[-1][-1] == ')' else ''
-        return value + ['.', pname, node.attr]
+        return value + ['.', pname, node.attr] + self.styler.onAttributeVisit(node)
 
     def visit_Subscript(self, node):
-        return self.language.subscript(self.visit(node.value), self.visit(node.slice))
+        return self.language.subscript(self.visit(node.value), self.visit(node.slice)) + self.styler.onSubscriptVisit(node)
 
     def visit_IfExp(self, node):
         return ['FIXME UNWEILDY IN TEXT']
@@ -1763,6 +1779,21 @@ class VuTextStyler:
             symbol = ['pname:'] + symbol
         return symbol
 
+    def onBeginScope(self):
+        pass
+
+    def onEndScope(self, scope):
+        return scope
+
+    def onCallVisit(self, node):
+        return []
+
+    def onAttributeVisit(self, node):
+        return []
+
+    def onSubscriptVisit(self, node):
+        return []
+
 
 class VuLanguageEN:
     """Helper class to generate English out of the VUs"""
@@ -1891,9 +1922,6 @@ class VuLanguageEN:
 
     def valid(self, value, expectTrue, must):
         return value + self.isOrMustBe(expectTrue, must) + ['a valid handle of its type']
-
-    def createInfo(self, value):
-        return value + ['\'s create info']
 
     def subscript(self, array, index):
         return ['element '] + index + [' of '] + array
